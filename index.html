@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="./style/style.css">
+    <title>N-Body: Barnes-Hut Galaxy Simulation</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+
+</head>
+<body>
+
+<div id="canvas-container"></div>
+
+<!-- UI Overlay -->
+<div class="ui-overlay">
+    <!-- Header -->
+    <div class="header">
+        <div class="header-bg">
+            <h1 style="color:white; margin-bottom: 1rem; font-weight: bold; font-size: 2rem">
+                <span style="color:#818CF8">N-Body</span> Galaxy Sim
+            </h1>
+            <p class="header-p">
+                Barnes-Hut алгоритм O(N log N) для моделирования гравитационного взаимодействия звёзд.
+                Каждая точка — звезда с массой, скоростью и гравитационным полем.
+            </p>
+            <p class="header-p">
+                Выполнил: Марков Кирилл Сергеевич<br>
+                Студент: 3 курса<br>
+                Группа: 23-ПМбо
+            </p>
+            <p class="header-p">
+                Значения по умолчанию
+            </p>
+            <div style="display: flex; gap:0.5rem; margin-bottom: 6px">
+                <span class="cheap">
+                    θ = 0.5
+                </span>
+                <span class="cheap">
+                    Softening: 0.01
+                </span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Controls -->
+    <div class="control-panel">
+        <div class="control-bg">
+            <div class="space-y-2">
+                <div>
+                    <div class="control-modul">
+                        <span style="color: lightgray">Рукавов галактики</span>
+                        <span class="metric" id="arms-display">3</span>
+                    </div>
+                    <input type="number" min="1" max="8" value="3"
+                           class="arm-inp"
+                           id="arms-input">
+                    <p style="font-size: 10px; color:#6b7280; margin-top:5px;">Enter для применения (1-8)</p>
+                </div>
+                <!-- Particle Count -->
+                <div>
+                    <div class="control-modul">
+                        <span style="color: lightgray">Количество звёзд</span>
+                        <span class="metric" id="count-display">2000</span>
+                    </div>
+                    <input type="range" min="500" max="5000" step="500" value="2000"
+                           class="slider-thumb" id="particle-slider">
+                </div>
+
+                <!-- Time Step -->
+                <div>
+                    <div class="control-modul">
+                        <span style="color: lightgray">Шаг времени</span>
+                        <span class="metric" id="dt-display">0.005</span>
+                    </div>
+                    <input type="range" min="0.001" max="0.02" step="0.001" value="0.005"
+                           class="slider-thumb" id="dt-slider">
+                </div>
+
+                <!-- Theta (Barnes-Hut accuracy) -->
+                <div>
+                    <div class="control-modul">
+                        <span style="color: lightgray">Точность θ</span>
+                        <span class="metric" id="theta-display">0.5</span>
+                    </div>
+                    <input type="range" min="0.0" max="1.0" step="0.1" value="0.5"
+                           class="slider-thumb" id="theta-slider">
+                    <p style="font-size: 10px; color:#6b7280; margin-top:5px;">Меньше θ = точнее, но медленнее</p>
+                </div>
+
+                <div style="display: flex; align-items: center; gap: 0.5rem; margin-top: 10px;">
+                    <input type="checkbox" id="center-mass-check" checked
+                           class="center-mass-checkbox">
+                    <label for="center-mass-check" style="color: #d1d5db;">Центр масс (чёрная дыра)</label>
+                </div>
+                <div class="control-modul">
+                    <span style="color: lightgray">Масса центра:</span>
+                    <span class="metric" id="center-mass-display">10000</span>
+                </div>
+
+                <!-- Buttons -->
+                <div style="display: flex; gap: 15px; padding-top: 10px;">
+                    <button id="reset-btn" class="control-button" style="background-color: #6366f1;">
+                        Перезапуск
+                    </button>
+                    <button id="pause-btn" class="control-button" style="background-color: #4b5563;">
+                        Пауза
+                    </button>
+                </div>
+
+                <div style="display: flex; gap: 15px;">
+                    <button id="toggle-tree-btn" class="extra-button" style="background-color: #321553; border-color: #562885; color:#B9A3D2;">
+                        Показать дерево
+                    </button>
+                    <button id="toggle-trails-btn" class="extra-button" style="background-color: #321553; border-color: #562885; color:#B9A3D2;">
+                        Следы
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Performance Stats -->
+    <div class="stats">
+        <div class="glass-panel">
+            <h3 style="color: white">МЕТРИКИ</h3>
+            <div class="space-y-2" style="font-size: 14px;">
+                <div class="info-div">
+                    <span style="color: #d1d5db;">FPS:</span>
+                    <span class="metric-value" style="color:lightgreen" id="fps-counter">60</span>
+                </div>
+                <div class="info-div">
+                    <span style="color: #d1d5db;">Время кадра:</span>
+                    <span class="metric-value" style="color:lightblue" id="frame-time">16.7ms</span>
+                </div>
+                <div class="info-div">
+                    <span style="color: #d1d5db;">Грав. расчёт:</span>
+                    <span class=" metric-value" style="color:mediumpurple" id="calc-time">0ms</span>
+                </div>
+                <div class="info-div">
+                    <span style="color: #d1d5db;">Узлы дерева:</span>
+                    <span class="metric-value" style="color:coral" id="node-count">0</span>
+                </div>
+                <div class="flex justify-between border-t border-gray-700 pt-2 mt-2">
+                    <span style="color: #d1d5db;">Общая энергия:</span>
+                    <span class="metric-value" style="color:goldenrod" id="energy">0.00</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script type="module" src="index.js"></script>
+
+</body>
+</html>
