@@ -21,6 +21,10 @@ class Vector3 implements Vector3Like {
         return new Vector3(this.x + v.x, this.y + v.y, this.z + v.z);
     }
 
+    sub(v: Vector3): Vector3 {
+        return new Vector3(this.x - v.x, this.y - v.y, this.z - v.z);
+    }
+
     mult(s: number): Vector3 {
         return new Vector3(this.x * s, this.y * s, this.z * s);
     }
@@ -202,6 +206,53 @@ class OctreeNode {
     }
 }
 
+class ErrorMetrics {
+    static calculateForceError(
+        approxForce: Vector3,
+        exactForce: Vector3
+    ): { relative: number; absolute: number } {
+        const diff = approxForce.sub(exactForce);
+        const absError = diff.mag();
+        const exactMag = exactForce.mag();
+
+        const relError = exactMag > 1e-10
+            ? (absError / exactMag) * 100
+            : 0;
+
+        return {
+            relative: relError,
+            absolute: absError
+        };
+    }
+
+    static calculateAverageError(errors: { relative: number; absolute: number }[]): {
+        avgRelative: number;
+        avgAbsolute: number;
+        maxRelative: number;
+        maxAbsolute: number;
+        stdRelative: number;
+    } {
+        const n = errors.length;
+        if (n === 0) return { avgRelative: 0, avgAbsolute: 0, maxRelative: 0, maxAbsolute: 0, stdRelative: 0 };
+
+        const avgRel = errors.reduce((sum, e) => sum + e.relative, 0) / n;
+        const avgAbs = errors.reduce((sum, e) => sum + e.absolute, 0) / n;
+        const maxRel = Math.max(...errors.map(e => e.relative));
+        const maxAbs = Math.max(...errors.map(e => e.absolute));
+
+        const variance = errors.reduce((sum, e) => sum + Math.pow(e.relative - avgRel, 2), 0) / n;
+        const stdRel = Math.sqrt(variance);
+
+        return {
+            avgRelative: avgRel,
+            avgAbsolute: avgAbs,
+            maxRelative: maxRel,
+            maxAbsolute: maxAbs,
+            stdRelative: stdRel
+        };
+    }
+}
+
 class GalaxySimulation {
     private bodies: Body[] = [];
     private N: number = 2000;
@@ -217,6 +268,10 @@ class GalaxySimulation {
     private armCount: number = 3;
     private hasCenterMass: boolean = true;
     private centerMass: number = 10000;
+
+    private enableErrorCalc: boolean = false;
+
+    private errorSampleIndices: number[] = [];
 
     private scene: any;
     private camera: any;
@@ -298,9 +353,9 @@ class GalaxySimulation {
         this.trails = new THREE.LineSegments(
             this.trailGeometry,
             new THREE.LineBasicMaterial({
-                color: 0x6366f1,
+                color: 0xff00ff,
                 transparent: true,
-                opacity: 0.2,
+                opacity: 0.6,
                 blending: THREE.AdditiveBlending
             })
         );
@@ -312,14 +367,15 @@ class GalaxySimulation {
 
     private initGalaxy(): void {
         this.bodies = [];
+        this.errorSampleIndices = [];
         const armSpread = 0.3;
 
         if (this.hasCenterMass) {
             const centerBody = new Body(
-                new Vector3(0, 0, 0),      // Позиция в центре
-                new Vector3(0, 0, 0),      // Нулевая скорость (неподвижна)
+                new Vector3(0, 0, 0),
+                new Vector3(0, 0, 0),
                 this.centerMass,
-                true                       // Флаг isCenter
+                true
             );
             this.bodies.push(centerBody);
         }
@@ -390,6 +446,80 @@ class GalaxySimulation {
         return this.root.countNodes();
     }
 
+    private calculateExactForce(body: Body, allBodies: Body[]): Vector3 {
+        let totalForce = new Vector3(0, 0, 0);
+
+        for (let other of allBodies) {
+            if (other === body) continue;
+
+            const dx = other.pos.x - body.pos.x;
+            const dy = other.pos.y - body.pos.y;
+            const dz = other.pos.z - body.pos.z;
+            const distSq = dx * dx + dy * dy + dz * dz + this.softening * this.softening;
+            const dist = Math.sqrt(distSq);
+
+            const force = this.G * other.mass / distSq;
+
+            totalForce = totalForce.add(new Vector3(
+                force * dx / dist,
+                force * dy / dist,
+                force * dz / dist
+            ));
+        }
+
+        return totalForce;
+    }
+
+    private calculateError(): {
+        avgRelative: number;
+        maxRelative: number;
+        stdRelative: number;
+        sampleSize: number;
+    } | null {
+
+        const sampleIndices: number[] = [];
+        const startIndex = this.hasCenterMass ? 1 : 0;
+        const errorSampleSize = this.N * 0.15
+        const step = (this.N - startIndex) / errorSampleSize;
+        for (let i = 0; i < errorSampleSize; i++) {
+            const idx = startIndex + Math.round(i * step);
+            if (idx < this.bodies.length) {
+                sampleIndices.push(idx);
+            }
+        }
+
+        this.errorSampleIndices = sampleIndices;
+
+        const approxForces: Vector3[] = [];
+        for (let idx of sampleIndices) {
+            if (this.root) {
+                approxForces.push(
+                    this.root.calculateForce(this.bodies[idx], this.theta, this.G, this.softening)
+                );
+            }
+        }
+
+        const exactForces: Vector3[] = [];
+        for (let idx of sampleIndices) {
+            exactForces.push(this.calculateExactForce(this.bodies[idx], this.bodies));
+        }
+
+
+        const errors: { relative: number; absolute: number }[] = [];
+        for (let i = 0; i < sampleIndices.length; i++) {
+            errors.push(ErrorMetrics.calculateForceError(approxForces[i], exactForces[i]));
+        }
+
+        const metrics = ErrorMetrics.calculateAverageError(errors);
+
+        return {
+            avgRelative: metrics.avgRelative,
+            maxRelative: metrics.maxRelative,
+            stdRelative: metrics.stdRelative,
+            sampleSize: sampleIndices.length
+        };
+    }
+
     private updatePhysics(): void {
         const calcStart = performance.now();
 
@@ -401,6 +531,16 @@ class GalaxySimulation {
             if (this.root) {
                 body.acc = this.root.calculateForce(body, this.theta, this.G, this.softening);
             }
+        }
+
+
+        if (this.enableErrorCalc && Math.random() < 0.2) {
+            const errorResult = this.calculateError();
+            if (errorResult) {
+                this.updateErrorDisplay(errorResult);
+            }
+        } else if (!this.enableErrorCalc) {
+            this.errorSampleIndices = [];
         }
 
         const calcTime = performance.now() - calcStart;
@@ -437,6 +577,22 @@ class GalaxySimulation {
         if (this.showTrails) this.updateTrails();
     }
 
+    private updateErrorDisplay(metrics: {
+        avgRelative: number;
+        maxRelative: number;
+        stdRelative: number;
+        sampleSize: number;
+    }): void {
+        const avgEl = document.getElementById('error-avg');
+        const maxEl = document.getElementById('error-max');
+        const stdEl = document.getElementById('error-std');
+        const speedupEl = document.getElementById('error-speedup');
+
+        if (avgEl) avgEl.textContent = metrics.avgRelative.toFixed(2) + '%';
+        if (maxEl) maxEl.textContent = metrics.maxRelative.toFixed(2) + '%';
+        if (stdEl) stdEl.textContent = metrics.stdRelative.toFixed(2) + '%';
+    }
+
     private updateGeometry(): void {
         const startIndex = this.hasCenterMass ? 1 : 0;
         const visualN = this.N;
@@ -445,6 +601,14 @@ class GalaxySimulation {
         const colors = this.geometry.attributes.color.array as Float32Array;
         const sizes = this.geometry.attributes.size.array as Float32Array;
 
+        const errorIndicesMap: { [key: number]: boolean } = {};
+        for (let idx of this.errorSampleIndices) {
+            const visualIdx = idx - startIndex;
+            if (visualIdx >= 0 && visualIdx < visualN) {
+                errorIndicesMap[visualIdx] = true;
+            }
+        }
+
         for (let i = 0; i < visualN; i++) {
             const bodyIndex = i + startIndex;
             const body = this.bodies[bodyIndex];
@@ -452,13 +616,22 @@ class GalaxySimulation {
             positions[i * 3 + 1] = body.pos.y;
             positions[i * 3 + 2] = body.pos.z;
 
-            const speed = body.vel.mag();
-            const t = Math.min(speed / 2, 1);
-            colors[i * 3] = 0.3 + t * 0.7;
-            colors[i * 3 + 1] = 0.5 + t * 0.3;
-            colors[i * 3 + 2] = 1.0 - t * 0.5;
+            const isErrorStar = this.enableErrorCalc && errorIndicesMap[i] === true;
 
-            sizes[i] = 0.3 + body.mass * 0.2;
+            if (isErrorStar) {
+                colors[i * 3] = 1.0;
+                colors[i * 3 + 1] = 0.2;
+                colors[i * 3 + 2] = 0.3;
+                sizes[i] = 0.8;
+            } else {
+                const speed = body.vel.mag();
+                const t = Math.min(speed / 2, 1);
+                colors[i * 3] = 0.3 + t * 0.7;
+                colors[i * 3 + 1] = 0.5 + t * 0.3;
+                colors[i * 3 + 2] = 1.0 - t * 0.5;
+
+                sizes[i] = 0.3 + body.mass * 0.2;
+            }
         }
 
         this.geometry.attributes.position.needsUpdate = true;
@@ -502,8 +675,10 @@ class GalaxySimulation {
     }
 
     private updateTrails(): void {
+        const startIndex = this.hasCenterMass ? 1 : 0;
         for (let i = 0; i < this.N; i++) {
-            const body = this.bodies[i];
+            const bodyIndex = i + startIndex;
+            const body = this.bodies[bodyIndex];
             this.trailHistory[i].push(body.pos.copy());
             if (this.trailHistory[i].length > 20) {
                 this.trailHistory[i].shift();
@@ -583,6 +758,18 @@ class GalaxySimulation {
             });
         }
 
+        const errorCheck = document.getElementById('error-check') as HTMLInputElement;
+        if (errorCheck) {
+            errorCheck.addEventListener('change', () => {
+                this.enableErrorCalc = errorCheck.checked;
+
+                if (!errorCheck.checked) {
+                    this.errorSampleIndices = [];
+                    this.resetErrorDisplay();
+                }
+            });
+        }
+
         const resetBtn = document.getElementById('reset-btn');
         if (resetBtn) {
             resetBtn.addEventListener('click', () => {
@@ -615,6 +802,16 @@ class GalaxySimulation {
                 toggleTrailsBtn.textContent = this.showTrails ? 'Скрыть следы' : 'Следы';
             });
         }
+    }
+
+    private resetErrorDisplay(): void {
+        const avgEl = document.getElementById('error-avg');
+        const maxEl = document.getElementById('error-max');
+        const stdEl = document.getElementById('error-std');
+
+        if (avgEl) avgEl.textContent = '—';
+        if (maxEl) maxEl.textContent = '—';
+        if (stdEl) stdEl.textContent = '—';
     }
 
     private onWindowResize(): void {
