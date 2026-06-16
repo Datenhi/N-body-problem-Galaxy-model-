@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel="stylesheet" href="./style.css">
+    <link rel="stylesheet" href="./style/style.css">
     <title>N-Body: Barnes-Hut Galaxy Simulation</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
@@ -99,6 +99,12 @@
                     <span class="metric" id="center-mass-display">10000</span>
                 </div>
 
+                <div style="display: flex; align-items: center; gap: 0.5rem; margin-top: 10px;">
+                    <input type="checkbox" id="error-check"
+                           class="center-mass-checkbox">
+                    <label for="error-check"  style="color: #d1d5db;">Расчёт погрешности (N≤1000)</label>
+                </div>
+
                 <!-- Buttons -->
                 <div style="display: flex; gap: 15px; padding-top: 10px;">
                     <button id="reset-btn" class="control-button" style="background-color: #6366f1;">
@@ -142,9 +148,21 @@
                     <span style="color: #d1d5db;">Узлы дерева:</span>
                     <span class="metric-value" style="color:coral" id="node-count">0</span>
                 </div>
-                <div class="flex justify-between border-t border-gray-700 pt-2 mt-2">
+                <div class="info-div">
                     <span style="color: #d1d5db;">Общая энергия:</span>
                     <span class="metric-value" style="color:goldenrod" id="energy">0.00</span>
+                </div>
+                <div class="info-div">
+                    <span style="color: #d1d5db;">Погрешность (средн):</span>
+                    <span class="metric-value" style="color:darkred" id="error-avg">—</span>
+                </div>
+                <div class="info-div">
+                    <span style="color: #d1d5db;">Погрешность (макс):</span>
+                    <span class="metric-value" style="color:darkred" id="error-max">—</span>
+                </div>
+                <div class="info-div">
+                    <span style="color: #d1d5db;">Стд. отклонение:</span>
+                    <span class="metric-value" style="color:darkred" id="error-std">—</span>
                 </div>
             </div>
         </div>
