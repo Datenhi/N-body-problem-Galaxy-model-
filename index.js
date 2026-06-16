@@ -10,6 +10,9 @@ var Vector3 = /** @class */ (function () {
     Vector3.prototype.add = function (v) {
         return new Vector3(this.x + v.x, this.y + v.y, this.z + v.z);
     };
+    Vector3.prototype.sub = function (v) {
+        return new Vector3(this.x - v.x, this.y - v.y, this.z - v.z);
+    };
     Vector3.prototype.mult = function (s) {
         return new Vector3(this.x * s, this.y * s, this.z * s);
     };
@@ -157,6 +160,41 @@ var OctreeNode = /** @class */ (function () {
     };
     return OctreeNode;
 }());
+var ErrorMetrics = /** @class */ (function () {
+    function ErrorMetrics() {
+    }
+    ErrorMetrics.calculateForceError = function (approxForce, exactForce) {
+        var diff = approxForce.sub(exactForce);
+        var absError = diff.mag();
+        var exactMag = exactForce.mag();
+        var relError = exactMag > 1e-10
+            ? (absError / exactMag) * 100
+            : 0;
+        return {
+            relative: relError,
+            absolute: absError
+        };
+    };
+    ErrorMetrics.calculateAverageError = function (errors) {
+        var n = errors.length;
+        if (n === 0)
+            return { avgRelative: 0, avgAbsolute: 0, maxRelative: 0, maxAbsolute: 0, stdRelative: 0 };
+        var avgRel = errors.reduce(function (sum, e) { return sum + e.relative; }, 0) / n;
+        var avgAbs = errors.reduce(function (sum, e) { return sum + e.absolute; }, 0) / n;
+        var maxRel = Math.max.apply(Math, errors.map(function (e) { return e.relative; }));
+        var maxAbs = Math.max.apply(Math, errors.map(function (e) { return e.absolute; }));
+        var variance = errors.reduce(function (sum, e) { return sum + Math.pow(e.relative - avgRel, 2); }, 0) / n;
+        var stdRel = Math.sqrt(variance);
+        return {
+            avgRelative: avgRel,
+            avgAbsolute: avgAbs,
+            maxRelative: maxRel,
+            maxAbsolute: maxAbs,
+            stdRelative: stdRel
+        };
+    };
+    return ErrorMetrics;
+}());
 var GalaxySimulation = /** @class */ (function () {
     function GalaxySimulation() {
         this.bodies = [];
@@ -172,6 +210,8 @@ var GalaxySimulation = /** @class */ (function () {
         this.armCount = 3;
         this.hasCenterMass = true;
         this.centerMass = 10000;
+        this.enableErrorCalc = false;
+        this.errorSampleIndices = [];
         this.positions = new Float32Array(this.N * 3);
         this.colors = new Float32Array(this.N * 3);
         this.sizes = new Float32Array(this.N);
@@ -218,9 +258,9 @@ var GalaxySimulation = /** @class */ (function () {
         this.trailGeometry = new THREE.BufferGeometry();
         this.trailGeometry.setAttribute('position', new THREE.BufferAttribute(this.trailPositions, 3));
         this.trails = new THREE.LineSegments(this.trailGeometry, new THREE.LineBasicMaterial({
-            color: 0x6366f1,
+            color: 0xff00ff,
             transparent: true,
-            opacity: 0.2,
+            opacity: 0.6,
             blending: THREE.AdditiveBlending
         }));
         this.scene.add(this.trails);
@@ -229,12 +269,10 @@ var GalaxySimulation = /** @class */ (function () {
     };
     GalaxySimulation.prototype.initGalaxy = function () {
         this.bodies = [];
+        this.errorSampleIndices = [];
         var armSpread = 0.3;
         if (this.hasCenterMass) {
-            var centerBody = new Body(new Vector3(0, 0, 0), // Позиция в центре
-            new Vector3(0, 0, 0), // Нулевая скорость (неподвижна)
-            this.centerMass, true // Флаг isCenter
-            );
+            var centerBody = new Body(new Vector3(0, 0, 0), new Vector3(0, 0, 0), this.centerMass, true);
             this.bodies.push(centerBody);
         }
         for (var i = 0; i < this.N; i++) {
@@ -286,6 +324,58 @@ var GalaxySimulation = /** @class */ (function () {
         }
         return this.root.countNodes();
     };
+    GalaxySimulation.prototype.calculateExactForce = function (body, allBodies) {
+        var totalForce = new Vector3(0, 0, 0);
+        for (var _i = 0, allBodies_1 = allBodies; _i < allBodies_1.length; _i++) {
+            var other = allBodies_1[_i];
+            if (other === body)
+                continue;
+            var dx = other.pos.x - body.pos.x;
+            var dy = other.pos.y - body.pos.y;
+            var dz = other.pos.z - body.pos.z;
+            var distSq = dx * dx + dy * dy + dz * dz + this.softening * this.softening;
+            var dist = Math.sqrt(distSq);
+            var force = this.G * other.mass / distSq;
+            totalForce = totalForce.add(new Vector3(force * dx / dist, force * dy / dist, force * dz / dist));
+        }
+        return totalForce;
+    };
+    GalaxySimulation.prototype.calculateError = function () {
+        var sampleIndices = [];
+        var startIndex = this.hasCenterMass ? 1 : 0;
+        var errorSampleSize = this.N * 0.15;
+        var step = (this.N - startIndex) / errorSampleSize;
+        for (var i = 0; i < errorSampleSize; i++) {
+            var idx = startIndex + Math.round(i * step);
+            if (idx < this.bodies.length) {
+                sampleIndices.push(idx);
+            }
+        }
+        this.errorSampleIndices = sampleIndices;
+        var approxForces = [];
+        for (var _i = 0, sampleIndices_1 = sampleIndices; _i < sampleIndices_1.length; _i++) {
+            var idx = sampleIndices_1[_i];
+            if (this.root) {
+                approxForces.push(this.root.calculateForce(this.bodies[idx], this.theta, this.G, this.softening));
+            }
+        }
+        var exactForces = [];
+        for (var _a = 0, sampleIndices_2 = sampleIndices; _a < sampleIndices_2.length; _a++) {
+            var idx = sampleIndices_2[_a];
+            exactForces.push(this.calculateExactForce(this.bodies[idx], this.bodies));
+        }
+        var errors = [];
+        for (var i = 0; i < sampleIndices.length; i++) {
+            errors.push(ErrorMetrics.calculateForceError(approxForces[i], exactForces[i]));
+        }
+        var metrics = ErrorMetrics.calculateAverageError(errors);
+        return {
+            avgRelative: metrics.avgRelative,
+            maxRelative: metrics.maxRelative,
+            stdRelative: metrics.stdRelative,
+            sampleSize: sampleIndices.length
+        };
+    };
     GalaxySimulation.prototype.updatePhysics = function () {
         var calcStart = performance.now();
         var nodeCount = this.buildOctree();
@@ -297,6 +387,15 @@ var GalaxySimulation = /** @class */ (function () {
             if (this.root) {
                 body.acc = this.root.calculateForce(body, this.theta, this.G, this.softening);
             }
+        }
+        if (this.enableErrorCalc && Math.random() < 0.2) {
+            var errorResult = this.calculateError();
+            if (errorResult) {
+                this.updateErrorDisplay(errorResult);
+            }
+        }
+        else if (!this.enableErrorCalc) {
+            this.errorSampleIndices = [];
         }
         var calcTime = performance.now() - calcStart;
         var calcTimeEl = document.getElementById('calc-time');
@@ -330,24 +429,53 @@ var GalaxySimulation = /** @class */ (function () {
         if (this.showTrails)
             this.updateTrails();
     };
+    GalaxySimulation.prototype.updateErrorDisplay = function (metrics) {
+        var avgEl = document.getElementById('error-avg');
+        var maxEl = document.getElementById('error-max');
+        var stdEl = document.getElementById('error-std');
+        var speedupEl = document.getElementById('error-speedup');
+        if (avgEl)
+            avgEl.textContent = metrics.avgRelative.toFixed(2) + '%';
+        if (maxEl)
+            maxEl.textContent = metrics.maxRelative.toFixed(2) + '%';
+        if (stdEl)
+            stdEl.textContent = metrics.stdRelative.toFixed(2) + '%';
+    };
     GalaxySimulation.prototype.updateGeometry = function () {
         var startIndex = this.hasCenterMass ? 1 : 0;
         var visualN = this.N;
         var positions = this.geometry.attributes.position.array;
         var colors = this.geometry.attributes.color.array;
         var sizes = this.geometry.attributes.size.array;
+        var errorIndicesMap = {};
+        for (var _i = 0, _a = this.errorSampleIndices; _i < _a.length; _i++) {
+            var idx = _a[_i];
+            var visualIdx = idx - startIndex;
+            if (visualIdx >= 0 && visualIdx < visualN) {
+                errorIndicesMap[visualIdx] = true;
+            }
+        }
         for (var i = 0; i < visualN; i++) {
             var bodyIndex = i + startIndex;
             var body = this.bodies[bodyIndex];
             positions[i * 3] = body.pos.x;
             positions[i * 3 + 1] = body.pos.y;
             positions[i * 3 + 2] = body.pos.z;
-            var speed = body.vel.mag();
-            var t = Math.min(speed / 2, 1);
-            colors[i * 3] = 0.3 + t * 0.7;
-            colors[i * 3 + 1] = 0.5 + t * 0.3;
-            colors[i * 3 + 2] = 1.0 - t * 0.5;
-            sizes[i] = 0.3 + body.mass * 0.2;
+            var isErrorStar = this.enableErrorCalc && errorIndicesMap[i] === true;
+            if (isErrorStar) {
+                colors[i * 3] = 1.0;
+                colors[i * 3 + 1] = 0.2;
+                colors[i * 3 + 2] = 0.3;
+                sizes[i] = 0.8;
+            }
+            else {
+                var speed = body.vel.mag();
+                var t = Math.min(speed / 2, 1);
+                colors[i * 3] = 0.3 + t * 0.7;
+                colors[i * 3 + 1] = 0.5 + t * 0.3;
+                colors[i * 3 + 2] = 1.0 - t * 0.5;
+                sizes[i] = 0.3 + body.mass * 0.2;
+            }
         }
         this.geometry.attributes.position.needsUpdate = true;
         this.geometry.attributes.color.needsUpdate = true;
@@ -386,8 +514,10 @@ var GalaxySimulation = /** @class */ (function () {
         this.treeLines.geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
     };
     GalaxySimulation.prototype.updateTrails = function () {
+        var startIndex = this.hasCenterMass ? 1 : 0;
         for (var i = 0; i < this.N; i++) {
-            var body = this.bodies[i];
+            var bodyIndex = i + startIndex;
+            var body = this.bodies[bodyIndex];
             this.trailHistory[i].push(body.pos.copy());
             if (this.trailHistory[i].length > 20) {
                 this.trailHistory[i].shift();
@@ -456,6 +586,16 @@ var GalaxySimulation = /** @class */ (function () {
                 thetaDisplay.textContent = _this.theta.toFixed(1);
             });
         }
+        var errorCheck = document.getElementById('error-check');
+        if (errorCheck) {
+            errorCheck.addEventListener('change', function () {
+                _this.enableErrorCalc = errorCheck.checked;
+                if (!errorCheck.checked) {
+                    _this.errorSampleIndices = [];
+                    _this.resetErrorDisplay();
+                }
+            });
+        }
         var resetBtn = document.getElementById('reset-btn');
         if (resetBtn) {
             resetBtn.addEventListener('click', function () {
@@ -485,6 +625,17 @@ var GalaxySimulation = /** @class */ (function () {
                 toggleTrailsBtn.textContent = _this.showTrails ? 'Скрыть следы' : 'Следы';
             });
         }
+    };
+    GalaxySimulation.prototype.resetErrorDisplay = function () {
+        var avgEl = document.getElementById('error-avg');
+        var maxEl = document.getElementById('error-max');
+        var stdEl = document.getElementById('error-std');
+        if (avgEl)
+            avgEl.textContent = '—';
+        if (maxEl)
+            maxEl.textContent = '—';
+        if (stdEl)
+            stdEl.textContent = '—';
     };
     GalaxySimulation.prototype.onWindowResize = function () {
         this.camera.aspect = window.innerWidth / window.innerHeight;
