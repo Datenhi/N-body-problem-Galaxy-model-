@@ -562,7 +562,6 @@ class GalaxySimulation {
             body.vel = halfStepVel;
         }
 
-        // Шаг 2: Перестраиваем дерево, вычисляем новые ускорения
         this.buildOctree();
 
         for (let body of this.bodies) {
@@ -572,7 +571,6 @@ class GalaxySimulation {
             }
         }
 
-        // Шаг 3: Довершение скорости
         let totalEnergy = 0;
 
         for (let body of this.bodies) {
