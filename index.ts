@@ -390,7 +390,7 @@ class GalaxySimulation {
             const z = Math.sin(angle) * dist;
             const y = (Math.random() - 0.5) * 2 * Math.exp(-dist / 10);
 
-            const totalMass = this.hasCenterMass ? this.centerMass : 1000;
+            const totalMass = this.hasCenterMass ? this.centerMass + this.N *3 : this.N *3;
             const v = Math.sqrt(this.G * totalMass / dist) * 0.8;
             const vx = -Math.sin(angle) * v;
             const vz = Math.cos(angle) * v;
@@ -400,6 +400,13 @@ class GalaxySimulation {
             const mass = 1.0 + Math.random() * 2.0;
 
             this.bodies.push(new Body(pos, vel, mass));
+        }
+
+        this.buildOctree();
+        for (let body of this.bodies) {
+            if (this.root) {
+                body.acc = this.root.calculateForce(body, this.theta, this.G, this.softening);
+            }
         }
 
         this.positions.fill(0);
@@ -543,31 +550,44 @@ class GalaxySimulation {
             this.errorSampleIndices = [];
         }
 
-        const calcTime = performance.now() - calcStart;
-        const calcTimeEl = document.getElementById('calc-time');
-        if (calcTimeEl) calcTimeEl.textContent = calcTime.toFixed(1) + 'ms';
-
-        let totalEnergy = 0;
-        let totalMass = 0;
-
         for (let body of this.bodies) {
             if (body.isCenter) {
                 body.vel = new Vector3(0, 0, 0);
                 body.acc = new Vector3(0, 0, 0);
-                totalMass += body.mass;
                 continue;
             }
-            body.vel = body.vel.add(body.acc.mult(this.dt));
-            body.pos = body.pos.add(body.vel.mult(this.dt));
+
+            const halfStepVel = body.vel.add(body.acc.mult(this.dt / 2));
+            body.pos = body.pos.add(halfStepVel.mult(this.dt));
+            body.vel = halfStepVel;
+        }
+
+        // Шаг 2: Перестраиваем дерево, вычисляем новые ускорения
+        this.buildOctree();
+
+        for (let body of this.bodies) {
+            if (body.isCenter) continue;
+            if (this.root) {
+                body.acc = this.root.calculateForce(body, this.theta, this.G, this.softening);
+            }
+        }
+
+        // Шаг 3: Довершение скорости
+        let totalEnergy = 0;
+
+        for (let body of this.bodies) {
+            if (body.isCenter) continue;
+
+            body.vel = body.vel.add(body.acc.mult(this.dt / 2));
 
             const vSq = body.vel.magSq();
             totalEnergy += 0.5 * body.mass * vSq;
-            totalMass += body.mass;
         }
 
-        if (this.centerSphere) {
-            this.centerSphere.visible = this.hasCenterMass;
-        }
+        const calcTime = performance.now() - calcStart;
+        const calcTimeEl = document.getElementById('calc-time');
+        if (calcTimeEl) calcTimeEl.textContent = calcTime.toFixed(1) + 'ms';
+        
 
         const energyEl = document.getElementById('energy');
         if (energyEl) energyEl.textContent = totalEnergy.toFixed(2);
